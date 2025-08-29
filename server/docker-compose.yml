@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    env_file: .env            # 이 파일의 변수들을 컨테이너에 주입
+    environment:
+      INDEX_PATH: /app/store  # 추가/덮어쓰기 가능
+    volumes:
+      - /opt/voicebot/store:/app/store:ro
+      - /opt/voicebot/data:/app/data:ro
+      - /opt/voicebot/model_bs32:/app/model_bs32:ro
