@@ -1,10 +1,35 @@
+version: "3.8"
+
 services:
   app:
     build: .
-    env_file: .env            # 이 파일의 변수들을 컨테이너에 주입
+    env_file: .env
+    container_name: voicebot-app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info
     environment:
-      INDEX_PATH: /app/store  # 추가/덮어쓰기 가능
+      HOST: 0.0.0.0
+      PORT: 8000
+      MODEL_PATH: /app/model_bs32
+      INDEX_PATH: /app/store
+      RAW_DATA_ROOT: /app/data
+      USE_CPU_WHISPER: "0"
+      HF_HOME: /app/.cache/huggingface
+      TORCH_HOME: /app/.cache/torch
     volumes:
-      - /opt/voicebot/store:/app/store:ro
-      - /opt/voicebot/data:/app/data:ro
-      - /opt/voicebot/model_bs32:/app/model_bs32:ro
+      - ./store:/app/store:ro
+      - ./data:/app/data:ro
+      - ./model_bs32:/app/model_bs32:ro
+      - ./temp:/app/temp
+      - ./cache/hf:/app/.cache/huggingface
+      - ./cache/torch:/app/.cache/torch
+    # GPU 쓰면 (Linux + NVIDIA 세팅이 된 경우)
+    # gpus: all
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    # 가장 쉬운 "임시(trycloudflare)" 터널: 실행하면 공개 URL을 로그에 찍어줌
+    command: tunnel --no-autoupdate --url http://app:8000
+    depends_on:
+      - app
+    restart: unless-stopped

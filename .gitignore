@@ -20,14 +20,10 @@ build/
 /android/app/*.jks
 /android/app/*.keystore
 
-# iOS/macOS
-/ios/Pods/
-macos/Pods/
-/ios/Flutter/Flutter.podspec
-/ios/Flutter/Generated.xcconfig
-/ios/Flutter/flutter_export_environment.sh
-**/*.xcuserdatad
-**/*.xcworkspace/xcuserdata/
+# linux / macOS / iOS
+macos/
+linux/
+ios/
 
 # (팀 정책에 따라) Podfile.lock은 커밋하거나 무시 둘 다 가능
 # Podfile.lock
@@ -41,6 +37,7 @@ macos/Pods/
 /server/store/
 /server/model/
 /server/model_bs32/
+/server/cache/
 
 # ---- 기타 ----
 .env

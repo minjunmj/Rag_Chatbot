@@ -11,6 +11,9 @@ void main() {
   runApp(const MyApp());
 }
 
+// uri
+const String kVoiceChatEndpoint = "https://brunswick-bloomberg-floppy-san.trycloudflare.com/voice-chat";
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -55,14 +58,15 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
     _initRecorder();
     _newChat();
   }
-  String _makeSessionId(){
+
+  String _makeSessionId() {
     final now = DateTime.now().microsecondsSinceEpoch;
     final rnd = Random().nextInt(1 << 32);
     return 'sess-$now-$rnd';
   }
-  
-  void _newChat(){
-    setState((){
+
+  void _newChat() {
+    setState(() {
       _sessionId = _makeSessionId();
       _messages.clear();
     });
@@ -70,7 +74,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
 
   Future<void> _initRecorder() async {
     await _requestPermission();
-    await _recorder.openRecorder(); 
+    await _recorder.openRecorder();
   }
 
   Future<void> _requestPermission() async {
@@ -78,17 +82,17 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
     if (!micStatus.isGranted) {
       throw RecordingPermissionException('🎙️ Microphone permission not granted');
     }
-  
+
     if (Platform.isAndroid) {
-    // Android 13 미만에서도 호출해도 안전: plugin이 내부에서 처리
       final notif = await Permission.notification.request();
       if (!notif.isGranted) {
-        // 포그라운드 서비스 알림 못 띄우면 녹음이 즉시 종료될 수 있음
         debugPrint('⚠️ Notification permission not granted.');
       }
     }
   }
+
   DateTime? _recordStartTime;
+
   Future<void> _startRecording() async {
     final dir = await getTemporaryDirectory();
     _recordedPath = '${dir.path}/recorded.aac';
@@ -99,20 +103,14 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
       }
     }
 
-    // await _recorder.startRecorder(
-    //   toFile: _recordedPath,
-    //   codec: Codec.pcm16WAV,          // WAV 원하면 유지
-    //   sampleRate: 44100,              // 기기 호환 좋은 값 44100
-    //   numChannels: 1,                 // 모노
-    //   audioSource: AudioSource.microphone, // 명시적으로 마이크
-    // );
     await _recorder.startRecorder(
-      toFile: _recordedPath!.replaceAll('.wav', '.aac'),
-      codec: Codec.aacADTS,   // ← 임시로 AAC
+      toFile: _recordedPath!,
+      codec: Codec.aacADTS,
       sampleRate: 44100,
       numChannels: 1,
       audioSource: AudioSource.microphone,
     );
+
     _recordStartTime = DateTime.now();
     setState(() {
       _isRecording = true;
@@ -123,50 +121,108 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
     await _recorder.stopRecorder();
     await Future.delayed(const Duration(milliseconds: 100));
     setState(() => _isRecording = false);
-    final duration = DateTime.now().difference(_recordStartTime ?? DateTime.now());
-    print('⏱ 녹음 시간: ${duration.inMilliseconds} ms');
+
     if (_recordedPath == null || !File(_recordedPath!).existsSync()) {
       setState(() => _messages.add(_Message("❌ 녹음된 파일이 존재하지 않습니다.", false)));
       return;
     }
 
-    final file = File(_recordedPath!);
-    final fileSize = await file.length();
-    print('📂 저장된 파일: $_recordedPath (크기: $fileSize bytes)');
-
     try {
-      var request = http.MultipartRequest(
-        'POST',
-        // 실제 물리 디바이스라면 → Uri.parse("http://<your_local_ip>:8000/voice-chat")
-        Uri.parse("http://192.168.0.4:8000/voice-chat"), // 실제 서버 주소
-        //Uri.parse("http://10.0.2.2:8000/voice-chat"), // Android emulator에서는 10.0.2.2 사용
-      );
+      final cleanUrl = kVoiceChatEndpoint
+          .trim()
+          .replaceAll(RegExp(r'[\u200B-\u200D\u2060\uFEFF]'), '');
+      final uri = Uri.parse(cleanUrl);
 
-      request.headers['X-Session-Id'] = _sessionId;
+      final req = http.MultipartRequest('POST', uri)
+        ..headers['X-Session-Id'] = _sessionId
+        ..files.add(await http.MultipartFile.fromPath('file', _recordedPath!));
 
-      request.files.add(await http.MultipartFile.fromPath('file', _recordedPath!));
+      final streamed = await req.send();
+      final body = await streamed.stream.bytesToString(); // default: utf8
 
-      var response = await request.send();
-
-      if (response.statusCode == 200) {
-        final respStr = await response.stream.bytesToString();
-        final jsonResp = jsonDecode(respStr);
-        final question = (jsonResp['question'] ?? '').toString();
-        final answer = (jsonResp['answer'] ?? '').toString();
-        
-        setState(() {
-          if (question.isNotEmpty){
-            _messages.add(_Message(question, true));
-          }
-          _messages.add(_Message(answer.isNotEmpty ? answer : "❔ 응답이 비어 있습니다.", false));
-        });
-      } else {
-        setState(() => _messages.add(_Message("❌ 서버 오류: ${response.statusCode}", false)));
+      if (streamed.statusCode == 202) {
+        final m = jsonDecode(body) as Map<String, dynamic>;
+        final jobId = (m['job_id'] ?? '').toString();
+        if (jobId.isEmpty) {
+          setState(() => _messages.add(_Message("❌ job_id가 비어 있습니다.", false)));
+          return;
+        }
+        setState(() => _messages.add(_Message("자료 검색중...", false)));
+        await _pollResult(jobId);
+        return;
       }
+
+      if (streamed.statusCode == 200) {
+        final obj = jsonDecode(body) as Map<String, dynamic>;
+        final question = (obj['question'] ?? '').toString();
+        final answer   = (obj['answer'] ?? '').toString();
+
+        setState(() {
+          if (question.isNotEmpty) _messages.add(_Message(question, true));
+          _messages.add(_Message(
+              answer.isNotEmpty ? answer : "❔ 응답이 비어 있습니다.", false));
+        });
+        return;
+      }
+
+      setState(() => _messages.add(_Message("❌ 서버 오류: ${streamed.statusCode} $body", false)));
     } catch (e) {
       setState(() => _messages.add(_Message("❌ 전송 실패: $e", false)));
     }
   }
+
+  // --- [FIX] UTF-8 강제 디코딩으로 문자깨짐 해결 ---
+  Future<void> _pollResult(String jobId) async {
+    final base = Uri.parse(
+      kVoiceChatEndpoint.trim().replaceAll(RegExp(r'[\u200B-\u200D\u2060\uFEFF]'), ''),
+    );
+
+    final resultUri = base.replace(
+      path: base.path.replaceFirst(RegExp(r'/voice-chat/?$'), '/voice-chat/result'),
+      queryParameters: {'job_id': jobId},
+    );
+
+    const maxWait = Duration(minutes: 3);
+    final start = DateTime.now();
+
+    while (true) {
+      final r = await http.get(resultUri, headers: {'X-Session-Id': _sessionId});
+      if (r.statusCode == 200) {
+        // ✅ 핵심: 응답을 바이트로 받아 UTF-8로 직접 디코딩
+        final raw = utf8.decode(r.bodyBytes);
+        final m = jsonDecode(raw) as Map<String, dynamic>;
+        final status = (m['status'] ?? '').toString();
+
+        if (status == 'done') {
+          final question = (m['question'] ?? '').toString();
+          final answer   = (m['answer'] ?? '').toString();
+          setState(() {
+            if (question.isNotEmpty) _messages.add(_Message(question, true));
+            _messages.add(_Message(answer.isNotEmpty ? answer : "❔ 응답이 비어 있습니다.", false));
+          });
+          return;
+        }
+        if (status == 'error') {
+          final msg = (m['message'] ?? '처리 중 오류가 발생했습니다.').toString();
+          setState(() => _messages.add(_Message("❌ $msg", false)));
+          return;
+        }
+        // status == 'processing' 이면 계속 대기
+      } else {
+        // 에러 바디도 UTF-8로 강제 디코딩
+        final err = utf8.decode(r.bodyBytes);
+        setState(() => _messages.add(_Message("❌ 결과 조회 실패: ${r.statusCode} $err", false)));
+        return;
+      }
+
+      if (DateTime.now().difference(start) > maxWait) {
+        setState(() => _messages.add(_Message("❌ 처리 지연: 잠시 후 다시 시도해 주세요.", false)));
+        return;
+      }
+      await Future.delayed(const Duration(seconds: 1));
+    }
+  }
+  // --- [FIX] 끝 ---
 
   @override
   void dispose() {
@@ -201,7 +257,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
                 blurRadius: 2,
                 spreadRadius: 0,
                 offset: const Offset(0, 1),
-                color: Colors.black.withValues(alpha: 0.05),
+                color: Colors.black.withOpacity(0.05),
               ),
             ],
           ),
@@ -220,7 +276,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
           IconButton(
             tooltip: '새 대화 시작',
             icon: const Icon(Icons.refresh),
-            onPressed: _newChat, // 히스토리 비우고 새 session_id 생성
+            onPressed: _newChat,
           ),
         ],
       ),
