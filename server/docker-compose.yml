@@ -1,35 +1,51 @@
 version: "3.8"
 
 services:
+  # 메인 APP (FastAPI + RAG 서버)
   app:
-    build: .
-    env_file: .env
+    build: .                      # 현재 디렉토리의 Dockerfile로 이미지 빌드
+    env_file: .env                # OPENAI_API_KEY 
     container_name: voicebot-app
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --log-level info
+
     environment:
       HOST: 0.0.0.0
       PORT: 8000
-      MODEL_PATH: /app/model_bs32
-      INDEX_PATH: /app/store
-      RAW_DATA_ROOT: /app/data
-      USE_CPU_WHISPER: "0"
-      HF_HOME: /app/.cache/huggingface
-      TORCH_HOME: /app/.cache/torch
-    volumes:
-      - ./store:/app/store:ro
-      - ./data:/app/data:ro
-      - ./model_bs32:/app/model_bs32:ro
-      - ./temp:/app/temp
-      - ./cache/hf:/app/.cache/huggingface
-      - ./cache/torch:/app/.cache/torch
-    # GPU 쓰면 (Linux + NVIDIA 세팅이 된 경우)
-    # gpus: all
-    restart: unless-stopped
+      MODEL_PATH: /app/model_bs32      # 모델 경로
+      INDEX_PATH: /app/store           # FAISS 인덱스 경로
+      RAW_DATA_ROOT: /app/data         # 판례 원문 JSON 루트 경로
+      USE_CPU_WHISPER: "0"             # 0=GPU 자동감지, 1=CPU 강제
+      HF_HOME: /app/.cache/huggingface # HuggingFace 모델 
+      TORCH_HOME: /app/.cache/torch    # PyTorch 모델 
 
+    volumes:
+      # :ro → 읽기 전용 마운트 (컨테이너가 데이터를 수정하지 못하도록 보호)
+      - ./store:/app/store:ro           # 사전 구축된 판례 벡터
+      - ./data:/app/data:ro             # 판례 원문 
+      - ./model_bs32:/app/model_bs32:ro # fine-tuned 임베딩 모델 파일
+
+      # 쓰기 가능 마운트
+      - ./temp:/app/temp                # 음성 파일 임시 저장소 (업로드/변환 후 삭제)
+      - ./cache/hf:/app/.cache/huggingface  
+      - ./cache/torch:/app/.cache/torch     
+
+    # GPU 사용 시 아래 주석 해제 (Linux + NVIDIA 드라이버 + nvidia-container-toolkit 필요)
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+    restart: unless-stopped  # 오류로 종료 시 자동 재시작 (수동 stop은 재시작 안 함)
+
+  # Cloudflare Tunnel (로컬 서버를 인터넷에 공개)
   cloudflared:
     image: cloudflare/cloudflared:latest
-    # 가장 쉬운 "임시(trycloudflare)" 터널: 실행하면 공개 URL을 로그에 찍어줌
+    # trycloudflare: 계정 없이 사용 가능한 임시 터널
+    # 실행 시 로그에 공개 HTTPS URL이 출력됨 → Flutter 앱의 kVoiceChatEndpoint에 업데이트 필요
     command: tunnel --no-autoupdate --url http://app:8000
     depends_on:
-      - app
+      - app          # app 서비스가 시작된 후에 실행
     restart: unless-stopped
